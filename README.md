@@ -251,6 +251,7 @@ Here's a list of the available fields inside the `conf.toml` file.
 | `weather.temperature_unit` | Temperature unit for weather display      | `"celsius"` or `"fahrenheit"`      | `"celsius"`  |
 | `now_playing.enabled`     | Show currently playing song (macOS only)  | `true` or `false`                  | `false`      |
 | `now_playing.refresh_interval_seconds` | Refresh interval for now-playing lookup | A positive integer, e.g. `5` | `5` |
+| `[[alarms]]` + `days` + `time` | Alarm rules (multiple entries allowed) | `days`: list like `["mon", "tuesday"]`, `time`: `"HH:MM"` or `"HH:MM:SS"` (24h) | _none_ |
 
 ### Example
 
@@ -281,6 +282,14 @@ temperature_unit = "celsius"
 [now_playing]
 enabled = true
 refresh_interval_seconds = 5
+
+[[alarms]]
+days = ["mon", "tue", "wed", "thu", "fri"]
+time = "09:30"
+
+[[alarms]]
+days = ["saturday", "sunday"]
+time = "10:00"
 ```
 
 > [!NOTE]
@@ -295,6 +304,11 @@ refresh_interval_seconds = 5
 > 
 > Now-playing currently supports macOS only and queries the Music app first, then Spotify.
 > If AppleScript blocks, now-playing fetches time out quickly so the clock keeps rendering.
+>
+> Alarm behavior:
+> - when an alarm triggers, the clock time flashes in a different color,
+> - it keeps flashing until dismissed with <kbd>Enter</kbd> or a mouse click,
+> - alarms follow the displayed time zone (`date.utc`).
 
 The default configuration can be found [here](public/default.toml).
 

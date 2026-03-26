@@ -25,3 +25,14 @@ temperature_unit = "celsius"
 [now_playing]
 enabled = false
 refresh_interval_seconds = 5
+
+# Alarms are defined as array-of-tables.
+# `time` accepts HH:MM or HH:MM:SS (24h format).
+#
+# [[alarms]]
+# days = ["mon", "wed", "fri"]
+# time = "09:30"
+#
+# [[alarms]]
+# days = ["saturday", "sunday"]
+# time = "10:00:00"

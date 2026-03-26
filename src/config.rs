@@ -2,9 +2,10 @@ use std::{
     env::{self, VarError},
     fs,
     path::Path,
+    str::FromStr,
 };
 
-use serde::Deserialize;
+use serde::{de, Deserialize, Deserializer};
 
 use crate::{color::Color, error::Error, position::Position};
 
@@ -16,6 +17,7 @@ pub struct Config {
     pub date: DateConfig,
     pub weather: WeatherConfig,
     pub now_playing: NowPlayingConfig,
+    pub alarms: Vec<AlarmConfig>,
 }
 
 #[derive(Deserialize)]
@@ -102,6 +104,121 @@ impl Default for NowPlayingConfig {
             enabled: false,
             refresh_interval_seconds: 5,
         }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct AlarmConfig {
+    pub days: Vec<AlarmDay>,
+    pub time: AlarmTime,
+}
+
+#[derive(Clone, Copy)]
+pub enum AlarmDay {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+impl AlarmDay {
+    pub fn matches(self, weekday: chrono::Weekday) -> bool {
+        use chrono::Weekday;
+
+        matches!(
+            (self, weekday),
+            (Self::Monday, Weekday::Mon)
+                | (Self::Tuesday, Weekday::Tue)
+                | (Self::Wednesday, Weekday::Wed)
+                | (Self::Thursday, Weekday::Thu)
+                | (Self::Friday, Weekday::Fri)
+                | (Self::Saturday, Weekday::Sat)
+                | (Self::Sunday, Weekday::Sun)
+        )
+    }
+}
+
+impl FromStr for AlarmDay {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "mon" | "monday" => Ok(Self::Monday),
+            "tue" | "tues" | "tuesday" => Ok(Self::Tuesday),
+            "wed" | "wednesday" => Ok(Self::Wednesday),
+            "thu" | "thur" | "thurs" | "thursday" => Ok(Self::Thursday),
+            "fri" | "friday" => Ok(Self::Friday),
+            "sat" | "saturday" => Ok(Self::Saturday),
+            "sun" | "sunday" => Ok(Self::Sunday),
+            _ => Err(format!("invalid weekday `{value}`")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AlarmDay {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let string = String::deserialize(deserializer)?;
+        Self::from_str(&string).map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct AlarmTime {
+    pub hour: u32,
+    pub minute: u32,
+    pub second: u32,
+}
+
+impl FromStr for AlarmTime {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<_> = value.split(':').collect();
+        if parts.len() != 2 && parts.len() != 3 {
+            return Err(format!(
+                "invalid alarm time `{value}`: expected `HH:MM` or `HH:MM:SS`"
+            ));
+        }
+
+        let hour = parts[0]
+            .parse::<u32>()
+            .map_err(|_| format!("invalid alarm hour in `{value}`"))?;
+        let minute = parts[1]
+            .parse::<u32>()
+            .map_err(|_| format!("invalid alarm minute in `{value}`"))?;
+        let second = if parts.len() == 3 {
+            parts[2]
+                .parse::<u32>()
+                .map_err(|_| format!("invalid alarm second in `{value}`"))?
+        } else {
+            0
+        };
+
+        if hour > 23 || minute > 59 || second > 59 {
+            return Err(format!("invalid alarm time `{value}`: out-of-range values"));
+        }
+
+        Ok(Self {
+            hour,
+            minute,
+            second,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for AlarmTime {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let string = String::deserialize(deserializer)?;
+        Self::from_str(&string).map_err(de::Error::custom)
     }
 }
 

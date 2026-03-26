@@ -1,3 +1,4 @@
+mod alarm;
 mod character;
 mod cli;
 mod clock;

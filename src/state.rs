@@ -10,7 +10,10 @@ use std::{
 use clap::Parser;
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseEventKind,
+    },
     execute,
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,6 +22,7 @@ use crossterm::{
 use signal_hook::{consts, flag};
 
 use crate::{
+    alarm::AlarmScheduler,
     cli::args::{Args, Mode, TimerArgs},
     clock::{
         counter::{Counter, CounterType},
@@ -32,6 +36,7 @@ use crate::{
 
 pub struct State {
     clock: Clock,
+    alarms: AlarmScheduler,
 }
 
 impl State {
@@ -43,12 +48,13 @@ impl State {
         args.overwrite(&mut config);
 
         let clock_mode = Self::clock_mode(mode, &config)?;
+        let alarms = AlarmScheduler::new(config.alarms.clone(), config.date.utc);
         let mut clock = Clock::new(config, clock_mode);
 
         let (width, height) = terminal::size().map_err(Error::Io)?;
         clock.update_padding(width, height)?;
 
-        Ok(Self { clock })
+        Ok(Self { clock, alarms })
     }
 
     fn clock_mode(mode: Option<Mode>, config: &Config) -> Result<ClockMode, Error> {
@@ -98,7 +104,7 @@ impl State {
 
     pub fn run(mut self) -> Result<(), Error> {
         terminal::enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen, Hide)?;
+        execute!(io::stdout(), EnterAlternateScreen, Hide, EnableMouseCapture)?;
 
         let reload_config = Arc::new(AtomicBool::new(false));
 
@@ -110,6 +116,8 @@ impl State {
                 self.reload_config()?;
             }
 
+            self.alarms.refresh();
+            self.clock.set_alarm_active(self.alarms.is_active());
             self.clock.refresh_weather();
             self.clock.refresh_now_playing();
             self.render()?;
@@ -130,6 +138,11 @@ impl State {
                         modifiers: KeyModifiers::CONTROL,
                         ..
                     } => return Ok(()),
+                    KeyEvent {
+                        code: KeyCode::Enter,
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    } => self.alarms.dismiss(),
                     KeyEvent {
                         code: KeyCode::Char('r'),
                         modifiers: KeyModifiers::CONTROL,
@@ -155,6 +168,14 @@ impl State {
                     }
                     _ => (),
                 },
+                Event::Mouse(mouse_event) => {
+                    if matches!(
+                        mouse_event.kind,
+                        MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_)
+                    ) {
+                        self.alarms.dismiss();
+                    }
+                }
                 Event::Resize(width, height) => self.refresh_display(width, height)?,
 
                 _ => (),
@@ -163,9 +184,13 @@ impl State {
     }
 
     pub fn exit() {
-        execute!(io::stdout(), LeaveAlternateScreen, Show).expect(
-            "error: failed to leave alternate screen, you might have to restart your terminal",
-        );
+        execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            Show
+        )
+        .expect("error: failed to leave alternate screen, you might have to restart your terminal");
         terminal::disable_raw_mode()
             .expect("error: failed to disable raw mode, you might have to restart your terminal");
     }
@@ -178,27 +203,36 @@ impl State {
     fn reload_config(&mut self) -> Result<(), Error> {
         let clock = &mut self.clock;
         let config = Config::parse()?;
+        let Config {
+            general,
+            position,
+            date,
+            weather,
+            now_playing,
+            alarms,
+        } = config;
 
-        clock.color = config.general.color;
-        clock.interval = Duration::from_millis(config.general.interval);
-        clock.blink = config.general.blink;
-        clock.bold = config.general.bold;
+        clock.color = general.color;
+        clock.interval = Duration::from_millis(general.interval);
+        clock.blink = general.blink;
+        clock.bold = general.bold;
 
-        clock.x_pos = config.position.x;
-        clock.y_pos = config.position.y;
+        clock.x_pos = position.x;
+        clock.y_pos = position.y;
 
-        clock.use_12h = config.date.use_12h;
-        clock.hide_seconds = config.date.hide_seconds;
-        clock.set_weather_config(config.weather);
-        clock.set_now_playing_config(config.now_playing);
+        clock.use_12h = date.use_12h;
+        clock.hide_seconds = date.hide_seconds;
+        clock.set_weather_config(weather);
+        clock.set_now_playing_config(now_playing);
+        self.alarms.reconfigure(alarms, date.utc);
 
         if let ClockMode::Time {
             time_zone,
             date_format,
         } = &mut self.clock.mode
         {
-            *time_zone = TimeZone::from_utc(config.date.utc);
-            *date_format = config.date.fmt;
+            *time_zone = TimeZone::from_utc(date.utc);
+            *date_format = date.fmt;
         }
 
         let (width, height) = terminal::size()?;

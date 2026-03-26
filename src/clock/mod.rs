@@ -35,6 +35,7 @@ pub struct Clock {
     pub hide_seconds: bool,
     pub blink: bool,
     pub bold: bool,
+    alarm_active: bool,
     weather: Option<Weather>,
     now_playing: Option<NowPlaying>,
 }
@@ -53,6 +54,7 @@ impl Clock {
             date,
             weather,
             now_playing,
+            ..
         } = config;
 
         Self {
@@ -66,6 +68,7 @@ impl Clock {
             hide_seconds: date.hide_seconds,
             blink: general.blink,
             bold: general.bold,
+            alarm_active: false,
             weather: Weather::from_config(weather),
             now_playing: NowPlaying::from_config(now_playing),
         }
@@ -117,6 +120,10 @@ impl Clock {
 
     pub fn set_now_playing_config(&mut self, now_playing_config: NowPlayingConfig) {
         self.now_playing = NowPlaying::from_config(now_playing_config);
+    }
+
+    pub fn set_alarm_active(&mut self, active: bool) {
+        self.alarm_active = active;
     }
 
     fn width(&self) -> u16 {
@@ -171,7 +178,12 @@ impl Clock {
             }
         }
 
-        let color = &self.color;
+        let alarm_color = Color::BrightRed;
+        let time_color = if self.alarm_active && (second & 1 == 0) {
+            &alarm_color
+        } else {
+            &self.color
+        };
 
         for row in 0..5 {
             let colon_character = if self.blink && (second & 1 == 1) {
@@ -180,17 +192,17 @@ impl Clock {
                 Character::Colon
             };
 
-            let colon = colon_character.fmt(color, row);
-            let h0 = Character::Num(hour / 10).fmt(color, row);
-            let h1 = Character::Num(hour % 10).fmt(color, row);
-            let m0 = Character::Num(minute / 10).fmt(color, row);
-            let m1 = Character::Num(minute % 10).fmt(color, row);
+            let colon = colon_character.fmt(time_color, row);
+            let h0 = Character::Num(hour / 10).fmt(time_color, row);
+            let h1 = Character::Num(hour % 10).fmt(time_color, row);
+            let m0 = Character::Num(minute / 10).fmt(time_color, row);
+            let m1 = Character::Num(minute % 10).fmt(time_color, row);
 
             write!(w, "{}{h0}{h1}{colon}{m0}{m1}", self.padding.clock)?;
 
             if !self.hide_seconds {
-                let s0 = Character::Num(second / 10).fmt(color, row);
-                let s1 = Character::Num(second % 10).fmt(color, row);
+                let s0 = Character::Num(second / 10).fmt(time_color, row);
+                let s1 = Character::Num(second % 10).fmt(time_color, row);
 
                 write!(w, "{colon}{s0}{s1}")?;
             }
