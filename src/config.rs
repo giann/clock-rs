@@ -15,6 +15,7 @@ pub struct Config {
     pub general: GeneralConfig,
     pub position: PositionConfig,
     pub date: DateConfig,
+    pub layout: LayoutConfig,
     pub weather: WeatherConfig,
     pub now_playing: NowPlayingConfig,
     pub alarms: Vec<AlarmConfig>,
@@ -67,6 +68,28 @@ impl Default for DateConfig {
             hide_seconds: false,
         }
     }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(default)]
+pub struct LayoutConfig {
+    pub mode: LayoutMode,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            mode: LayoutMode::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutMode {
+    #[default]
+    Stacked,
+    Split,
 }
 
 #[derive(Clone, Deserialize)]

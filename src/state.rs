@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
@@ -30,6 +30,7 @@ use crate::{
         time_zone::TimeZone,
         Clock,
     },
+    color::Color,
     config::Config,
     error::Error,
 };
@@ -40,6 +41,8 @@ pub struct State {
 }
 
 impl State {
+    const LOADER_FRAMES: [&'static str; 8] = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"];
+
     pub fn new() -> Result<Self, Error> {
         let args = Args::parse();
         let mut config = Config::parse()?;
@@ -207,6 +210,7 @@ impl State {
             general,
             position,
             date,
+            layout,
             weather,
             now_playing,
             alarms,
@@ -222,6 +226,7 @@ impl State {
 
         clock.use_12h = date.use_12h;
         clock.hide_seconds = date.hide_seconds;
+        clock.set_layout_mode(layout.mode);
         clock.set_weather_config(weather);
         clock.set_now_playing_config(now_playing);
         self.alarms.reconfigure(alarms, date.utc);
@@ -250,13 +255,49 @@ impl State {
 
         execute!(stdout, MoveTo(0, self.clock.padding.top))?;
 
-        let lock = stdout.lock();
-        let mut buffered_writer = BufWriter::new(lock);
+        {
+            let lock = stdout.lock();
+            let mut buffered_writer = BufWriter::new(lock);
+            self.clock.fmt(&mut buffered_writer)?;
+            buffered_writer.flush()?;
+        }
 
-        self.clock.fmt(&mut buffered_writer)?;
-        buffered_writer.flush()?;
+        self.render_loader(&mut stdout, width, height)?;
 
         Ok(())
+    }
+
+    fn render_loader(&self, stdout: &mut io::Stdout, width: u16, height: u16) -> Result<(), Error> {
+        let x = width.saturating_sub(1);
+        let y = height.saturating_sub(1);
+
+        execute!(stdout, MoveTo(x, y))?;
+
+        if self.clock.is_info_loading() {
+            write!(
+                stdout,
+                "{}{}{}",
+                self.clock.color.foreground(),
+                Self::loader_frame(),
+                Color::RESET
+            )?;
+        } else {
+            write!(stdout, " ")?;
+        }
+
+        stdout.flush()?;
+        Ok(())
+    }
+
+    fn loader_frame() -> &'static str {
+        let tick = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 90;
+        let index = (tick as usize) % Self::LOADER_FRAMES.len();
+
+        Self::LOADER_FRAMES[index]
     }
 }
 

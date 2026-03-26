@@ -11,7 +11,7 @@ use crate::{
     character::Character,
     clock::mode::ClockMode,
     color::Color,
-    config::{Config, NowPlayingConfig, WeatherConfig},
+    config::{Config, LayoutMode, NowPlayingConfig, WeatherConfig},
     error::Error,
     now_playing::NowPlaying,
     position::Position,
@@ -22,6 +22,7 @@ use crate::{
 pub struct Padding {
     pub top: u16,
     clock: String,
+    terminal_width: u16,
 }
 
 pub struct Clock {
@@ -35,6 +36,7 @@ pub struct Clock {
     pub hide_seconds: bool,
     pub blink: bool,
     pub bold: bool,
+    layout_mode: LayoutMode,
     alarm_active: bool,
     weather: Option<Weather>,
     now_playing: Option<NowPlaying>,
@@ -46,12 +48,21 @@ impl Clock {
     const HEIGHT: u16 = 7;
     const AM_SUFFIX: &'static str = " [AM]";
     const PM_SUFFIX: &'static str = " [PM]";
+    const TEMP_COLOR_STOPS: [(f64, (u8, u8, u8)); 5] = [
+        (-10.0, (8, 25, 80)),
+        (5.0, (12, 40, 120)),
+        (15.0, (25, 80, 45)),
+        (25.0, (100, 55, 10)),
+        (35.0, (95, 20, 10)),
+    ];
+    const DIGIT_ROWS: usize = 5;
 
     pub fn new(config: Config, mode: ClockMode) -> Self {
         let Config {
             general,
             position,
             date,
+            layout,
             weather,
             now_playing,
             ..
@@ -68,6 +79,7 @@ impl Clock {
             hide_seconds: date.hide_seconds,
             blink: general.blink,
             bold: general.bold,
+            layout_mode: layout.mode,
             alarm_active: false,
             weather: Weather::from_config(weather),
             now_playing: NowPlaying::from_config(now_playing),
@@ -78,10 +90,15 @@ impl Clock {
         let clock_width = self.width();
         self.mode.text(clock_width)?;
 
-        let column = self.x_pos.calculate(width, clock_width / 2);
+        let column = if self.layout_mode == LayoutMode::Split {
+            Position::Start.calculate(width, clock_width / 2)
+        } else {
+            self.x_pos.calculate(width, clock_width / 2)
+        };
         self.padding.top = self.y_pos.calculate(height, self.height() / 2);
 
         self.padding.clock = " ".repeat(column as usize);
+        self.padding.terminal_width = width;
 
         Ok(())
     }
@@ -126,6 +143,18 @@ impl Clock {
         self.alarm_active = active;
     }
 
+    pub fn set_layout_mode(&mut self, layout_mode: LayoutMode) {
+        self.layout_mode = layout_mode;
+    }
+
+    pub fn is_info_loading(&self) -> bool {
+        self.weather.as_ref().is_some_and(Weather::is_loading)
+            || self
+                .now_playing
+                .as_ref()
+                .is_some_and(NowPlaying::is_loading)
+    }
+
     fn width(&self) -> u16 {
         if self.hide_seconds {
             return Self::WIDTH_NO_SECONDS;
@@ -135,6 +164,10 @@ impl Clock {
     }
 
     fn height(&self) -> u16 {
+        if self.layout_mode == LayoutMode::Split {
+            return Self::DIGIT_ROWS as u16;
+        }
+
         Self::HEIGHT
             + if self.show_weather() { 1 } else { 0 }
             + if self.show_now_playing() { 1 } else { 0 }
@@ -156,6 +189,80 @@ impl Clock {
             self.padding.clock,
             " ".repeat(half_width.saturating_sub(line_len / 2) as usize)
         )
+    }
+
+    fn info_lines<'a>(&'a self, date_line: &'a str) -> Vec<&'a str> {
+        let mut lines = vec![date_line];
+
+        if self.show_weather() {
+            if let Some(weather_line) = self.weather.as_ref().and_then(Weather::line) {
+                lines.push(weather_line);
+            }
+        }
+
+        if self.show_now_playing() {
+            if let Some(now_playing_line) = self.now_playing.as_ref().and_then(NowPlaying::line) {
+                lines.push(now_playing_line);
+            }
+        }
+
+        lines
+    }
+
+    fn split_column(&self) -> (u16, u16) {
+        let clock_start = self.padding.clock.chars().count() as u16;
+        let clock_end = clock_start + self.width();
+        let column_start = clock_end + 4;
+        let column_width = self
+            .padding
+            .terminal_width
+            .saturating_sub(column_start.saturating_add(1));
+
+        (column_start, column_width)
+    }
+
+    fn rgb_fg((r, g, b): (u8, u8, u8)) -> String {
+        format!("\x1B[38;2;{r};{g};{b}m")
+    }
+
+    fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
+        let value = a as f64 + (b as f64 - a as f64) * t;
+        value.round().clamp(0.0, 255.0) as u8
+    }
+
+    fn temperature_colors(celsius: f64) -> (u8, u8, u8) {
+        let stops = &Self::TEMP_COLOR_STOPS;
+
+        if celsius <= stops[0].0 {
+            return stops[0].1;
+        }
+
+        if celsius >= stops[stops.len() - 1].0 {
+            let stop = stops[stops.len() - 1];
+            return stop.1;
+        }
+
+        for i in 0..(stops.len() - 1) {
+            let (t0, fg0) = stops[i];
+            let (t1, fg1) = stops[i + 1];
+
+            if (t0..=t1).contains(&celsius) {
+                let ratio = if (t1 - t0).abs() < f64::EPSILON {
+                    0.0
+                } else {
+                    (celsius - t0) / (t1 - t0)
+                };
+                let fg = (
+                    Self::lerp_u8(fg0.0, fg1.0, ratio),
+                    Self::lerp_u8(fg0.1, fg1.1, ratio),
+                    Self::lerp_u8(fg0.2, fg1.2, ratio),
+                );
+
+                return fg;
+            }
+        }
+
+        stops[0].1
     }
 
     pub fn fmt(&self, w: &mut BufWriter<StdoutLock<'_>>) -> Result<(), Error> {
@@ -184,8 +291,13 @@ impl Clock {
         } else {
             &self.color
         };
+        let info_lines = self.info_lines(&text);
+        let (split_column_start, split_column_width) = self.split_column();
+        let clock_end = self.padding.clock.chars().count() as u16 + self.width();
 
-        for row in 0..5 {
+        let split_info_start_row = (Self::DIGIT_ROWS.saturating_sub(info_lines.len())) / 2;
+
+        for row in 0..Self::DIGIT_ROWS {
             let colon_character = if self.blink && (second & 1 == 1) {
                 Character::Empty
             } else {
@@ -198,7 +310,12 @@ impl Clock {
             let m0 = Character::Num(minute / 10).fmt(time_color, row);
             let m1 = Character::Num(minute % 10).fmt(time_color, row);
 
-            write!(w, "{}{h0}{h1}{colon}{m0}{m1}", self.padding.clock)?;
+            write!(
+                w,
+                "\r\x1B[2K{}{}{}{}{}",
+                self.padding.clock, h0, h1, colon, m0
+            )?;
+            write!(w, "{m1}")?;
 
             if !self.hide_seconds {
                 let s0 = Character::Num(second / 10).fmt(time_color, row);
@@ -207,7 +324,62 @@ impl Clock {
                 write!(w, "{colon}{s0}{s1}")?;
             }
 
+            if self.layout_mode == LayoutMode::Split {
+                let info_row_index = row.saturating_sub(split_info_start_row);
+                if row >= split_info_start_row {
+                    if let Some(info_line) = info_lines.get(info_row_index) {
+                        let line_len = info_line.chars().count() as u16;
+                        let centered_offset = if line_len >= split_column_width {
+                            0
+                        } else {
+                            (split_column_width - line_len) / 2
+                        };
+                        let target_col = split_column_start + centered_offset;
+                        let gap = target_col.saturating_sub(clock_end);
+
+                        write!(w, "{}{}", " ".repeat(gap as usize), self.color.foreground())?;
+
+                        let weather_line = self.weather.as_ref().and_then(Weather::line);
+                        let weather_temp =
+                            self.weather.as_ref().and_then(Weather::temperature_celsius);
+
+                        if let (Some(weather_line), Some(temp_celsius)) =
+                            (weather_line, weather_temp)
+                        {
+                            if *info_line == weather_line {
+                                if let Some((temperature_text, rest)) =
+                                    weather_line.split_once(" | ")
+                                {
+                                    let fg = Self::temperature_colors(temp_celsius);
+
+                                    write!(
+                                        w,
+                                        "{}{}{}{}{}{}",
+                                        Self::rgb_fg(fg),
+                                        temperature_text,
+                                        Color::RESET,
+                                        self.color.foreground(),
+                                        " | ",
+                                        rest
+                                    )?;
+                                } else {
+                                    write!(w, "{info_line}")?;
+                                }
+                            } else {
+                                write!(w, "{info_line}")?;
+                            }
+                        } else {
+                            write!(w, "{info_line}")?;
+                        }
+                    }
+                }
+            }
+
             writeln!(w, "\r")?;
+        }
+
+        if self.layout_mode == LayoutMode::Split {
+            return Ok(());
         }
 
         let bold_escape_str = if self.bold { Color::BOLD } else { "" };
@@ -224,12 +396,32 @@ impl Clock {
             if let Some(weather_line) = self.weather.as_ref().and_then(Weather::line) {
                 let weather_padding = self.line_padding(weather_line.chars().count() as u16);
 
-                writeln!(
+                write!(
                     w,
-                    "\r\x1B[2K{bold_escape_str}{weather_padding}{}{}",
-                    self.color.foreground(),
-                    weather_line
+                    "\r\x1B[2K{bold_escape_str}{weather_padding}{}",
+                    self.color.foreground()
                 )?;
+
+                if let (Some(temp_celsius), Some((temperature_text, rest))) = (
+                    self.weather.as_ref().and_then(Weather::temperature_celsius),
+                    weather_line.split_once(" | "),
+                ) {
+                    let fg = Self::temperature_colors(temp_celsius);
+
+                    writeln!(
+                        w,
+                        "{}{}{}{}{}{}{}",
+                        Self::rgb_fg(fg),
+                        temperature_text,
+                        Color::RESET,
+                        bold_escape_str,
+                        self.color.foreground(),
+                        " | ",
+                        rest
+                    )?;
+                } else {
+                    writeln!(w, "{weather_line}")?;
+                }
             }
         }
 

@@ -17,6 +17,9 @@ use_12h = false
 utc = false
 hide_seconds = false
 
+[layout]
+mode = "stacked"
+
 [weather]
 auto_location = false
 refresh_interval_minutes = 10

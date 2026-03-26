@@ -1,4 +1,9 @@
-use std::{env, time::Duration, time::Instant};
+use std::{
+    env,
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde::Deserialize;
 
@@ -10,7 +15,9 @@ pub struct Weather {
     refresh_interval: Duration,
     temperature_unit: TemperatureUnit,
     line: Option<String>,
+    temperature_celsius: Option<f64>,
     last_fetch: Option<Instant>,
+    in_flight: Option<Receiver<Result<WeatherData, String>>>,
 }
 
 #[derive(Deserialize)]
@@ -30,9 +37,14 @@ struct IpApiResponse {
     longitude: Option<f64>,
 }
 
+struct WeatherData {
+    line: String,
+    temperature_celsius: f64,
+}
+
 impl Weather {
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
-    const DISPLAY_ERROR_MAX_LEN: usize = 80;
+    const FALLBACK_LINE: &'static str = "Weather unavailable";
 
     pub fn from_config(config: WeatherConfig) -> Option<Self> {
         let has_coordinates = config.latitude.is_some() && config.longitude.is_some();
@@ -50,7 +62,9 @@ impl Weather {
             refresh_interval,
             temperature_unit: config.temperature_unit,
             line: None,
+            temperature_celsius: None,
             last_fetch: None,
+            in_flight: None,
         })
     }
 
@@ -58,7 +72,32 @@ impl Weather {
         self.line.as_deref()
     }
 
+    pub fn temperature_celsius(&self) -> Option<f64> {
+        self.temperature_celsius
+    }
+
     pub fn update_if_due(&mut self) {
+        let polled = self.in_flight.as_ref().map(Receiver::try_recv);
+
+        match polled {
+            Some(Ok(Ok(weather_data))) => {
+                self.line = Some(weather_data.line);
+                self.temperature_celsius = Some(weather_data.temperature_celsius);
+                self.in_flight = None;
+            }
+            Some(Ok(Err(_))) | Some(Err(TryRecvError::Disconnected)) => {
+                self.line = Some(Self::FALLBACK_LINE.to_string());
+                self.temperature_celsius = None;
+                self.in_flight = None;
+            }
+            Some(Err(TryRecvError::Empty)) => return,
+            None => (),
+        }
+
+        if self.in_flight.is_some() {
+            return;
+        }
+
         if self
             .last_fetch
             .is_some_and(|last_fetch| last_fetch.elapsed() < self.refresh_interval)
@@ -67,23 +106,32 @@ impl Weather {
         }
 
         self.last_fetch = Some(Instant::now());
+        let (tx, rx) = mpsc::channel();
+        let latitude = self.latitude;
+        let longitude = self.longitude;
+        let temperature_unit = self.temperature_unit;
 
-        match self.fetch_line() {
-            Ok(line) => self.line = Some(line),
-            Err(err) => {
-                eprintln!("weather fetch error: {err}");
-                self.line = Some(Self::format_display_error(&err));
-            }
-        }
+        thread::spawn(move || {
+            let _ = tx.send(Self::fetch_line_for(latitude, longitude, temperature_unit));
+        });
+        self.in_flight = Some(rx);
     }
 
-    fn fetch_line(&mut self) -> Result<String, String> {
-        let (latitude, longitude) = self.coordinates()?;
+    pub fn is_loading(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    fn fetch_line_for(
+        latitude: Option<f64>,
+        longitude: Option<f64>,
+        temperature_unit: TemperatureUnit,
+    ) -> Result<WeatherData, String> {
+        let (latitude, longitude) = Self::coordinates(latitude, longitude)?;
         let url = format!(
             "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,weather_code&temperature_unit={}&forecast_days=1",
             latitude,
             longitude,
-            self.temperature_unit.as_api_value()
+            temperature_unit.as_api_value()
         );
 
         let response = Self::agent_for_host("api.open-meteo.com", 443, true)?
@@ -96,23 +144,25 @@ impl Weather {
             .into_json::<OpenMeteoResponse>()
             .map_err(|err| err.to_string())?;
         let (icon, wording) = Self::weather_display(weather.current.weather_code);
+        let temp_value = weather.current.temperature_2m;
+        let temperature_celsius = match temperature_unit {
+            TemperatureUnit::Celsius => temp_value,
+            TemperatureUnit::Fahrenheit => (temp_value - 32.0) * 5.0 / 9.0,
+        };
 
-        Ok(format!(
-            "{:.1}{} | {icon}  {wording}",
-            weather.current.temperature_2m,
-            self.temperature_unit.symbol()
-        ))
+        Ok(WeatherData {
+            line: format!(
+                "{temp_value:.1}{} | {icon}  {wording}",
+                temperature_unit.symbol()
+            ),
+            temperature_celsius,
+        })
     }
 
-    fn coordinates(&mut self) -> Result<(f64, f64), String> {
-        match (self.latitude, self.longitude) {
+    fn coordinates(latitude: Option<f64>, longitude: Option<f64>) -> Result<(f64, f64), String> {
+        match (latitude, longitude) {
             (Some(latitude), Some(longitude)) => Ok((latitude, longitude)),
-            _ => {
-                let (latitude, longitude) = Self::resolve_coordinates_from_ip()?;
-                self.latitude = Some(latitude);
-                self.longitude = Some(longitude);
-                Ok((latitude, longitude))
-            }
+            _ => Self::resolve_coordinates_from_ip(),
         }
     }
 
@@ -153,20 +203,6 @@ impl Weather {
             96 | 99 => ("⚡*", "Thunderstorm + hail"),
             _ => ("?", "Unknown"),
         }
-    }
-
-    fn format_display_error(err: &str) -> String {
-        let single_line = err.split_whitespace().collect::<Vec<_>>().join(" ");
-
-        if single_line.chars().count() > Self::DISPLAY_ERROR_MAX_LEN {
-            let truncated = single_line
-                .chars()
-                .take(Self::DISPLAY_ERROR_MAX_LEN.saturating_sub(1))
-                .collect::<String>();
-            return format!("Weather error: {truncated}…");
-        }
-
-        format!("Weather error: {single_line}")
     }
 
     fn agent_for_host(host: &str, port: u16, is_https: bool) -> Result<ureq::Agent, String> {

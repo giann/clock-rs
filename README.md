@@ -244,6 +244,7 @@ Here's a list of the available fields inside the `conf.toml` file.
 | `date.use_12h`            | Use the 12h format                         | `true` or `false`.                 | `false`      |
 | `date.utc`                | Use UTC time                               | `true` or `false`.                 | `false`      |
 | `date.hide_seconds`       | Do not show seconds                        | `true` or `false`.                 | `false`      |
+| `layout.mode`             | Layout mode for time vs info lines         | `"stacked"` (default) or `"split"` | `"stacked"`  |
 | `weather.latitude`        | Latitude used for Open-Meteo weather data  | A decimal latitude, e.g. `48.8566` | _unset_ (disabled) |
 | `weather.longitude`       | Longitude used for Open-Meteo weather data | A decimal longitude, e.g. `2.3522` | _unset_ (disabled) |
 | `weather.auto_location`   | Resolve coordinates from public IP when latitude/longitude are not set | `true` or `false` | `false` |
@@ -274,6 +275,9 @@ use_12h = true
 utc = true
 hide_seconds = true
 
+[layout]
+mode = "split"
+
 [weather]
 auto_location = true
 refresh_interval_minutes = 10
@@ -299,7 +303,7 @@ time = "10:00"
 >
 > Weather network requests honor common proxy variables:
 > `http_proxy`, `https_proxy`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY`.
-> If a weather request fails, the weather line shows the error details and the full error is logged to stderr.
+> If a weather request fails, the weather line shows `Weather unavailable`.
 > The weather client uses native OS certificate roots, which helps when HTTPS traffic is inspected by a corporate proxy.
 > 
 > Now-playing currently supports macOS only and queries the Music app first, then Spotify.
@@ -309,6 +313,9 @@ time = "10:00"
 > - when an alarm triggers, the clock time flashes in a different color,
 > - it keeps flashing until dismissed with <kbd>Enter</kbd> or a mouse click,
 > - alarms follow the displayed time zone (`date.utc`).
+>
+> `layout.mode = "split"` puts the time on the left and date/weather/now-playing on the right.
+> While weather or now-playing refreshes in the background, a braille loader is shown in the bottom-right corner.
 
 The default configuration can be found [here](public/default.toml).
 

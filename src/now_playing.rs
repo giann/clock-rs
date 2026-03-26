@@ -1,5 +1,6 @@
 use std::{
     process::{Command, Output, Stdio},
+    sync::mpsc::{self, Receiver, TryRecvError},
     thread,
     time::{Duration, Instant},
 };
@@ -10,6 +11,7 @@ pub struct NowPlaying {
     refresh_interval: Duration,
     line: Option<String>,
     last_fetch: Option<Instant>,
+    in_flight: Option<Receiver<Result<Option<String>, String>>>,
 }
 
 impl NowPlaying {
@@ -25,6 +27,7 @@ impl NowPlaying {
             refresh_interval: Duration::from_secs(config.refresh_interval_seconds.max(1)),
             line: None,
             last_fetch: None,
+            in_flight: None,
         })
     }
 
@@ -33,6 +36,35 @@ impl NowPlaying {
     }
 
     pub fn update_if_due(&mut self) {
+        let polled = self.in_flight.as_ref().map(Receiver::try_recv);
+
+        match polled {
+            Some(Ok(Ok(Some(track)))) => {
+                self.line = Some(format!("♪ {track}"));
+                self.in_flight = None;
+            }
+            Some(Ok(Ok(None))) => {
+                self.line = Some("♪ No song playing".to_string());
+                self.in_flight = None;
+            }
+            Some(Ok(Err(err))) => {
+                self.line = Some(Self::format_display_error(&err));
+                self.in_flight = None;
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.line = Some(Self::format_display_error(
+                    "background updater disconnected",
+                ));
+                self.in_flight = None;
+            }
+            Some(Err(TryRecvError::Empty)) => return,
+            None => (),
+        }
+
+        if self.in_flight.is_some() {
+            return;
+        }
+
         if self
             .last_fetch
             .is_some_and(|last_fetch| last_fetch.elapsed() < self.refresh_interval)
@@ -41,19 +73,20 @@ impl NowPlaying {
         }
 
         self.last_fetch = Some(Instant::now());
+        let (tx, rx) = mpsc::channel();
 
-        match self.fetch_line() {
-            Ok(Some(track)) => self.line = Some(format!("♪ {track}")),
-            Ok(None) => self.line = Some("♪ No song playing".to_string()),
-            Err(err) => {
-                eprintln!("now playing fetch error: {err}");
-                self.line = Some(Self::format_display_error(&err));
-            }
-        }
+        thread::spawn(move || {
+            let _ = tx.send(Self::fetch_line());
+        });
+        self.in_flight = Some(rx);
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.in_flight.is_some()
     }
 
     #[cfg(target_os = "macos")]
-    fn fetch_line(&self) -> Result<Option<String>, String> {
+    fn fetch_line() -> Result<Option<String>, String> {
         const SCRIPT: &str = r#"
 set outputText to ""
 try
@@ -106,7 +139,7 @@ return outputText
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn fetch_line(&self) -> Result<Option<String>, String> {
+    fn fetch_line() -> Result<Option<String>, String> {
         Ok(None)
     }
 
