@@ -220,7 +220,7 @@ By default, the configuration file is named `conf.toml` and is stored in the OS 
 | Platform | Configuration file path                                |
 | -------- | ------------------------------------------------------ |
 | Linux    | `~/.config/clock-rs/conf.toml`                         |
-| MacOS    | `~/Library/Application Support/clock-rs/conf.toml`     |
+| MacOS    | `~/.config/clock-rs/conf.toml`                         |
 | Windows  | `C:\Users\%USERNAME%\AppData\Local\clock-rs\conf.toml` |
 
 You can change this path by setting the `CONF_PATH` environment variable.  
@@ -244,6 +244,13 @@ Here's a list of the available fields inside the `conf.toml` file.
 | `date.use_12h`            | Use the 12h format                         | `true` or `false`.                 | `false`      |
 | `date.utc`                | Use UTC time                               | `true` or `false`.                 | `false`      |
 | `date.hide_seconds`       | Do not show seconds                        | `true` or `false`.                 | `false`      |
+| `weather.latitude`        | Latitude used for Open-Meteo weather data  | A decimal latitude, e.g. `48.8566` | _unset_ (disabled) |
+| `weather.longitude`       | Longitude used for Open-Meteo weather data | A decimal longitude, e.g. `2.3522` | _unset_ (disabled) |
+| `weather.auto_location`   | Resolve coordinates from public IP when latitude/longitude are not set | `true` or `false` | `false` |
+| `weather.refresh_interval_minutes` | Refresh interval for weather data | A positive integer, e.g. `10`      | `10`         |
+| `weather.temperature_unit` | Temperature unit for weather display      | `"celsius"` or `"fahrenheit"`      | `"celsius"`  |
+| `now_playing.enabled`     | Show currently playing song (macOS only)  | `true` or `false`                  | `false`      |
+| `now_playing.refresh_interval_seconds` | Refresh interval for now-playing lookup | A positive integer, e.g. `5` | `5` |
 
 ### Example
 
@@ -265,7 +272,29 @@ fmt = "%A, %B %d, %Y"
 use_12h = true
 utc = true
 hide_seconds = true
+
+[weather]
+auto_location = true
+refresh_interval_minutes = 10
+temperature_unit = "celsius"
+
+[now_playing]
+enabled = true
+refresh_interval_seconds = 5
 ```
+
+> [!NOTE]
+> Weather is shown when either:
+> - both `weather.latitude` and `weather.longitude` are set, or
+> - `weather.auto_location = true` so coordinates are resolved from your public IP.
+>
+> Weather network requests honor common proxy variables:
+> `http_proxy`, `https_proxy`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY`.
+> If a weather request fails, the weather line shows the error details and the full error is logged to stderr.
+> The weather client uses native OS certificate roots, which helps when HTTPS traffic is inspected by a corporate proxy.
+> 
+> Now-playing currently supports macOS only and queries the Music app first, then Spotify.
+> If AppleScript blocks, now-playing fetches time out quickly so the clock keeps rendering.
 
 The default configuration can be found [here](public/default.toml).
 

@@ -16,3 +16,12 @@ fmt = "%d-%m-%Y"
 use_12h = false
 utc = false
 hide_seconds = false
+
+[weather]
+auto_location = false
+refresh_interval_minutes = 10
+temperature_unit = "celsius"
+
+[now_playing]
+enabled = false
+refresh_interval_seconds = 5

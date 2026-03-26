@@ -5,9 +5,11 @@ mod clock;
 mod color;
 mod config;
 mod error;
+mod now_playing;
 mod position;
 mod segment;
 mod state;
+mod weather;
 
 use std::process;
 

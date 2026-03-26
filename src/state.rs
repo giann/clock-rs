@@ -110,6 +110,8 @@ impl State {
                 self.reload_config()?;
             }
 
+            self.clock.refresh_weather();
+            self.clock.refresh_now_playing();
             self.render()?;
 
             if !event::poll(self.clock.interval)? {
@@ -187,6 +189,8 @@ impl State {
 
         clock.use_12h = config.date.use_12h;
         clock.hide_seconds = config.date.hide_seconds;
+        clock.set_weather_config(config.weather);
+        clock.set_now_playing_config(config.now_playing);
 
         if let ClockMode::Time {
             time_zone,
