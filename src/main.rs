@@ -8,6 +8,7 @@ mod config;
 mod error;
 mod now_playing;
 mod position;
+mod process_usage;
 mod segment;
 mod state;
 mod weather;

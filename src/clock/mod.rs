@@ -15,6 +15,7 @@ use crate::{
     error::Error,
     now_playing::NowPlaying,
     position::Position,
+    process_usage::ProcessUsage,
     weather::Weather,
 };
 
@@ -40,6 +41,33 @@ pub struct Clock {
     alarm_active: bool,
     weather: Option<Weather>,
     now_playing: Option<NowPlaying>,
+    process_usage: Option<ProcessUsage>,
+}
+
+enum InfoLine<'a> {
+    Plain(&'a str),
+    Weather {
+        line: &'a str,
+        temperature_celsius: f64,
+    },
+    ProcessUsage {
+        usage_prefix: &'a str,
+        usage_text: &'a str,
+        usage_percent: f64,
+    },
+}
+
+impl InfoLine<'_> {
+    fn len_chars(&self) -> usize {
+        match self {
+            Self::Plain(line) | Self::Weather { line, .. } => line.chars().count(),
+            Self::ProcessUsage {
+                usage_prefix,
+                usage_text,
+                ..
+            } => usage_prefix.chars().count() + usage_text.chars().count(),
+        }
+    }
 }
 
 impl Clock {
@@ -55,6 +83,8 @@ impl Clock {
         (25.0, (100, 55, 10)),
         (35.0, (95, 20, 10)),
     ];
+    const USAGE_MIN_COLOR: (u8, u8, u8) = (30, 170, 65);
+    const USAGE_MAX_COLOR: (u8, u8, u8) = (200, 35, 35);
     const DIGIT_ROWS: usize = 5;
 
     pub fn new(config: Config, mode: ClockMode) -> Self {
@@ -83,6 +113,7 @@ impl Clock {
             alarm_active: false,
             weather: Weather::from_config(weather),
             now_playing: NowPlaying::from_config(now_playing),
+            process_usage: Some(ProcessUsage::new()),
         }
     }
 
@@ -139,6 +170,18 @@ impl Clock {
         self.now_playing = NowPlaying::from_config(now_playing_config);
     }
 
+    pub fn refresh_process_usage(&mut self) {
+        if !matches!(self.mode, ClockMode::Time { .. }) {
+            return;
+        }
+
+        let Some(process_usage) = &mut self.process_usage else {
+            return;
+        };
+
+        process_usage.update_if_due();
+    }
+
     pub fn set_alarm_active(&mut self, active: bool) {
         self.alarm_active = active;
     }
@@ -153,6 +196,10 @@ impl Clock {
                 .now_playing
                 .as_ref()
                 .is_some_and(NowPlaying::is_loading)
+            || self
+                .process_usage
+                .as_ref()
+                .is_some_and(ProcessUsage::is_loading)
     }
 
     fn width(&self) -> u16 {
@@ -171,6 +218,7 @@ impl Clock {
         Self::HEIGHT
             + if self.show_weather() { 1 } else { 0 }
             + if self.show_now_playing() { 1 } else { 0 }
+            + if self.show_process_usage() { 1 } else { 0 }
     }
 
     fn show_weather(&self) -> bool {
@@ -179,6 +227,10 @@ impl Clock {
 
     fn show_now_playing(&self) -> bool {
         matches!(self.mode, ClockMode::Time { .. }) && self.now_playing.is_some()
+    }
+
+    fn show_process_usage(&self) -> bool {
+        matches!(self.mode, ClockMode::Time { .. }) && self.process_usage.is_some()
     }
 
     fn line_padding(&self, line_len: u16) -> String {
@@ -191,18 +243,43 @@ impl Clock {
         )
     }
 
-    fn info_lines<'a>(&'a self, date_line: &'a str) -> Vec<&'a str> {
-        let mut lines = vec![date_line];
+    fn info_lines<'a>(&'a self, date_line: &'a str) -> Vec<InfoLine<'a>> {
+        let mut lines = vec![InfoLine::Plain(date_line)];
 
         if self.show_weather() {
             if let Some(weather_line) = self.weather.as_ref().and_then(Weather::line) {
-                lines.push(weather_line);
+                if let Some(temperature_celsius) =
+                    self.weather.as_ref().and_then(Weather::temperature_celsius)
+                {
+                    lines.push(InfoLine::Weather {
+                        line: weather_line,
+                        temperature_celsius,
+                    });
+                } else {
+                    lines.push(InfoLine::Plain(weather_line));
+                }
             }
         }
 
         if self.show_now_playing() {
             if let Some(now_playing_line) = self.now_playing.as_ref().and_then(NowPlaying::line) {
-                lines.push(now_playing_line);
+                lines.push(InfoLine::Plain(now_playing_line));
+            }
+        }
+
+        if self.show_process_usage() {
+            if let Some(process_usage_line) = self
+                .process_usage
+                .as_ref()
+                .and_then(ProcessUsage::line_data)
+            {
+                lines.push(InfoLine::ProcessUsage {
+                    usage_prefix: process_usage_line.usage_prefix(),
+                    usage_text: process_usage_line.usage_text(),
+                    usage_percent: process_usage_line.usage_percent(),
+                });
+            } else {
+                lines.push(InfoLine::Plain(""));
             }
         }
 
@@ -265,6 +342,68 @@ impl Clock {
         stops[0].1
     }
 
+    fn usage_colors(usage_percent: f64) -> (u8, u8, u8) {
+        let ratio = ((usage_percent - 50.0) / 50.0).clamp(0.0, 1.0);
+        (
+            Self::lerp_u8(Self::USAGE_MIN_COLOR.0, Self::USAGE_MAX_COLOR.0, ratio),
+            Self::lerp_u8(Self::USAGE_MIN_COLOR.1, Self::USAGE_MAX_COLOR.1, ratio),
+            Self::lerp_u8(Self::USAGE_MIN_COLOR.2, Self::USAGE_MAX_COLOR.2, ratio),
+        )
+    }
+
+    fn write_info_line(
+        &self,
+        w: &mut BufWriter<StdoutLock<'_>>,
+        info_line: &InfoLine<'_>,
+        bold_escape_str: &str,
+    ) -> Result<(), Error> {
+        match info_line {
+            InfoLine::Plain(line) => {
+                write!(w, "{line}")?;
+            }
+            InfoLine::Weather {
+                line,
+                temperature_celsius,
+            } => {
+                if let Some((temperature_text, rest)) = line.split_once(" | ") {
+                    let fg = Self::temperature_colors(*temperature_celsius);
+
+                    write!(
+                        w,
+                        "{}{}{}{}{}{}{}",
+                        Self::rgb_fg(fg),
+                        temperature_text,
+                        Color::RESET,
+                        bold_escape_str,
+                        self.color.foreground(),
+                        " | ",
+                        rest
+                    )?;
+                } else {
+                    write!(w, "{line}")?;
+                }
+            }
+            InfoLine::ProcessUsage {
+                usage_prefix,
+                usage_text,
+                usage_percent,
+            } => {
+                let fg = Self::usage_colors(*usage_percent);
+                write!(
+                    w,
+                    "{usage_prefix}{}{}{}{}{}",
+                    Self::rgb_fg(fg),
+                    usage_text,
+                    Color::RESET,
+                    bold_escape_str,
+                    self.color.foreground()
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn fmt(&self, w: &mut BufWriter<StdoutLock<'_>>) -> Result<(), Error> {
         let mut text = self.mode.text(self.width())?;
         let (mut hour, minute, second) = self.mode.get_time();
@@ -295,7 +434,10 @@ impl Clock {
         let (split_column_start, split_column_width) = self.split_column();
         let clock_end = self.padding.clock.chars().count() as u16 + self.width();
 
-        let split_info_start_row = (Self::DIGIT_ROWS.saturating_sub(info_lines.len())) / 2;
+        let split_info_start_row = Self::DIGIT_ROWS
+            .saturating_sub(info_lines.len())
+            .saturating_add(1)
+            / 2;
 
         for row in 0..Self::DIGIT_ROWS {
             let colon_character = if self.blink && (second & 1 == 1) {
@@ -328,7 +470,7 @@ impl Clock {
                 let info_row_index = row.saturating_sub(split_info_start_row);
                 if row >= split_info_start_row {
                     if let Some(info_line) = info_lines.get(info_row_index) {
-                        let line_len = info_line.chars().count() as u16;
+                        let line_len = info_line.len_chars() as u16;
                         let centered_offset = if line_len >= split_column_width {
                             0
                         } else {
@@ -338,39 +480,7 @@ impl Clock {
                         let gap = target_col.saturating_sub(clock_end);
 
                         write!(w, "{}{}", " ".repeat(gap as usize), self.color.foreground())?;
-
-                        let weather_line = self.weather.as_ref().and_then(Weather::line);
-                        let weather_temp =
-                            self.weather.as_ref().and_then(Weather::temperature_celsius);
-
-                        if let (Some(weather_line), Some(temp_celsius)) =
-                            (weather_line, weather_temp)
-                        {
-                            if *info_line == weather_line {
-                                if let Some((temperature_text, rest)) =
-                                    weather_line.split_once(" | ")
-                                {
-                                    let fg = Self::temperature_colors(temp_celsius);
-
-                                    write!(
-                                        w,
-                                        "{}{}{}{}{}{}",
-                                        Self::rgb_fg(fg),
-                                        temperature_text,
-                                        Color::RESET,
-                                        self.color.foreground(),
-                                        " | ",
-                                        rest
-                                    )?;
-                                } else {
-                                    write!(w, "{info_line}")?;
-                                }
-                            } else {
-                                write!(w, "{info_line}")?;
-                            }
-                        } else {
-                            write!(w, "{info_line}")?;
-                        }
+                        self.write_info_line(w, info_line, "")?;
                     }
                 }
             }
@@ -383,60 +493,17 @@ impl Clock {
         }
 
         let bold_escape_str = if self.bold { Color::BOLD } else { "" };
-        let text_padding = self.line_padding(text.chars().count() as u16);
+        for (index, info_line) in info_lines.iter().enumerate() {
+            let line_padding = self.line_padding(info_line.len_chars() as u16);
+            let top_spacing = if index == 0 { "\n" } else { "" };
 
-        writeln!(
-            w,
-            "\n\r\x1B[2K{bold_escape_str}{}{}{text}",
-            text_padding,
-            self.color.foreground()
-        )?;
-
-        if self.show_weather() {
-            if let Some(weather_line) = self.weather.as_ref().and_then(Weather::line) {
-                let weather_padding = self.line_padding(weather_line.chars().count() as u16);
-
-                write!(
-                    w,
-                    "\r\x1B[2K{bold_escape_str}{weather_padding}{}",
-                    self.color.foreground()
-                )?;
-
-                if let (Some(temp_celsius), Some((temperature_text, rest))) = (
-                    self.weather.as_ref().and_then(Weather::temperature_celsius),
-                    weather_line.split_once(" | "),
-                ) {
-                    let fg = Self::temperature_colors(temp_celsius);
-
-                    writeln!(
-                        w,
-                        "{}{}{}{}{}{}{}",
-                        Self::rgb_fg(fg),
-                        temperature_text,
-                        Color::RESET,
-                        bold_escape_str,
-                        self.color.foreground(),
-                        " | ",
-                        rest
-                    )?;
-                } else {
-                    writeln!(w, "{weather_line}")?;
-                }
-            }
-        }
-
-        if self.show_now_playing() {
-            if let Some(now_playing_line) = self.now_playing.as_ref().and_then(NowPlaying::line) {
-                let now_playing_padding =
-                    self.line_padding(now_playing_line.chars().count() as u16);
-
-                writeln!(
-                    w,
-                    "\r\x1B[2K{bold_escape_str}{now_playing_padding}{}{}",
-                    self.color.foreground(),
-                    now_playing_line
-                )?;
-            }
+            write!(
+                w,
+                "{top_spacing}\r\x1B[2K{bold_escape_str}{line_padding}{}",
+                self.color.foreground()
+            )?;
+            self.write_info_line(w, info_line, bold_escape_str)?;
+            writeln!(w)?;
         }
 
         Ok(())

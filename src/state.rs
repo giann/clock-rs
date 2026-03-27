@@ -123,6 +123,7 @@ impl State {
             self.clock.set_alarm_active(self.alarms.is_active());
             self.clock.refresh_weather();
             self.clock.refresh_now_playing();
+            self.clock.refresh_process_usage();
             self.render()?;
 
             if !event::poll(self.clock.interval)? {
@@ -244,8 +245,9 @@ impl State {
         self.refresh_display(width, height)
     }
 
-    fn render(&self) -> Result<(), Error> {
+    fn render(&mut self) -> Result<(), Error> {
         let (width, height) = terminal::size()?;
+        self.clock.update_padding(width, height)?;
 
         if self.clock.is_too_large(width, height) {
             return Ok(());

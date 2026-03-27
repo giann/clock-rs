@@ -314,8 +314,9 @@ time = "10:00"
 > - it keeps flashing until dismissed with <kbd>Enter</kbd> or a mouse click,
 > - alarms follow the displayed time zone (`date.utc`).
 >
-> `layout.mode = "split"` puts the time on the left and date/weather/now-playing on the right.
-> While weather or now-playing refreshes in the background, a braille loader is shown in the bottom-right corner.
+> `layout.mode = "split"` puts the time on the left and date/weather/now-playing/process-alert on the right.
+> A process alert line is shown under now-playing whenever a process exceeds 50% CPU or RAM usage.
+> While weather, now-playing, or process usage refreshes in the background, a braille loader is shown in the bottom-right corner.
 
 The default configuration can be found [here](public/default.toml).
 
