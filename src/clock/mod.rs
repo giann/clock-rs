@@ -38,6 +38,7 @@ pub struct Clock {
     pub blink: bool,
     pub bold: bool,
     layout_mode: LayoutMode,
+    active_layout_mode: LayoutMode,
     alarm_active: bool,
     weather: Option<Weather>,
     now_playing: Option<NowPlaying>,
@@ -86,6 +87,7 @@ impl Clock {
     const USAGE_MIN_COLOR: (u8, u8, u8) = (30, 170, 65);
     const USAGE_MAX_COLOR: (u8, u8, u8) = (200, 35, 35);
     const DIGIT_ROWS: usize = 5;
+    const ONE_LINE_SEPARATOR: &'static str = " | ";
 
     pub fn new(config: Config, mode: ClockMode) -> Self {
         let Config {
@@ -110,6 +112,7 @@ impl Clock {
             blink: general.blink,
             bold: general.bold,
             layout_mode: layout.mode,
+            active_layout_mode: layout.mode,
             alarm_active: false,
             weather: Weather::from_config(weather),
             now_playing: NowPlaying::from_config(now_playing),
@@ -119,14 +122,24 @@ impl Clock {
 
     pub fn update_padding(&mut self, width: u16, height: u16) -> Result<(), Error> {
         let clock_width = self.width();
-        self.mode.text(clock_width)?;
+        let text = self.mode.text(clock_width)?;
+        let (hour, minute, second) = self.mode.get_time();
+        self.active_layout_mode = self.effective_layout_mode(height);
 
-        let column = if self.layout_mode == LayoutMode::Split {
-            Position::Start.calculate(width, clock_width / 2)
-        } else {
-            self.x_pos.calculate(width, clock_width / 2)
+        let column = match self.active_layout_mode {
+            LayoutMode::Split => Position::Start.calculate(width, clock_width / 2),
+            LayoutMode::Oneline => {
+                let line_len = self.one_line_length(&text, hour, minute, second) as u16;
+                self.x_pos.calculate(width, line_len / 2)
+            }
+            LayoutMode::Stacked => self.x_pos.calculate(width, clock_width / 2),
         };
-        self.padding.top = self.y_pos.calculate(height, self.height() / 2);
+        let y_offset = if self.active_layout_mode == LayoutMode::Oneline {
+            0
+        } else {
+            self.height() / 2
+        };
+        self.padding.top = self.y_pos.calculate(height, y_offset);
 
         self.padding.clock = " ".repeat(column as usize);
         self.padding.terminal_width = width;
@@ -135,6 +148,10 @@ impl Clock {
     }
 
     pub fn is_too_large(&self, width: u16, height: u16) -> bool {
+        if self.active_layout_mode == LayoutMode::Oneline {
+            return height < 1 || width < 2;
+        }
+
         self.width() + 1 >= width || self.height() + 1 >= height
     }
 
@@ -188,6 +205,7 @@ impl Clock {
 
     pub fn set_layout_mode(&mut self, layout_mode: LayoutMode) {
         self.layout_mode = layout_mode;
+        self.active_layout_mode = layout_mode;
     }
 
     pub fn is_info_loading(&self) -> bool {
@@ -202,6 +220,10 @@ impl Clock {
                 .is_some_and(ProcessUsage::is_loading)
     }
 
+    pub fn is_one_line_active(&self) -> bool {
+        self.active_layout_mode == LayoutMode::Oneline
+    }
+
     fn width(&self) -> u16 {
         if self.hide_seconds {
             return Self::WIDTH_NO_SECONDS;
@@ -211,14 +233,7 @@ impl Clock {
     }
 
     fn height(&self) -> u16 {
-        if self.layout_mode == LayoutMode::Split {
-            return Self::DIGIT_ROWS as u16;
-        }
-
-        Self::HEIGHT
-            + if self.show_weather() { 1 } else { 0 }
-            + if self.show_now_playing() { 1 } else { 0 }
-            + if self.show_process_usage() { 1 } else { 0 }
+        self.height_for_layout(self.active_layout_mode)
     }
 
     fn show_weather(&self) -> bool {
@@ -231,6 +246,32 @@ impl Clock {
 
     fn show_process_usage(&self) -> bool {
         matches!(self.mode, ClockMode::Time { .. }) && self.process_usage.is_some()
+    }
+
+    fn height_for_layout(&self, layout_mode: LayoutMode) -> u16 {
+        match layout_mode {
+            LayoutMode::Split => Self::DIGIT_ROWS as u16,
+            LayoutMode::Oneline => 1,
+            LayoutMode::Stacked => {
+                Self::HEIGHT
+                    + if self.show_weather() { 1 } else { 0 }
+                    + if self.show_now_playing() { 1 } else { 0 }
+                    + if self.show_process_usage() { 1 } else { 0 }
+            }
+        }
+    }
+
+    fn effective_layout_mode(&self, terminal_height: u16) -> LayoutMode {
+        if self.layout_mode == LayoutMode::Oneline {
+            return LayoutMode::Oneline;
+        }
+
+        let configured_height = self.height_for_layout(self.layout_mode);
+        if configured_height + 1 >= terminal_height {
+            LayoutMode::Oneline
+        } else {
+            self.layout_mode
+        }
     }
 
     fn line_padding(&self, line_len: u16) -> String {
@@ -404,10 +445,199 @@ impl Clock {
         Ok(())
     }
 
+    fn plain_time_text(&self, hour: u32, minute: u32, second: u32) -> String {
+        let mut display_hour = hour;
+        let mut suffix = "";
+
+        if matches!(self.mode, ClockMode::Time { .. }) && self.use_12h {
+            suffix = if hour < 12 {
+                Self::AM_SUFFIX
+            } else {
+                Self::PM_SUFFIX
+            };
+
+            if display_hour > 12 {
+                display_hour -= 12;
+            } else if display_hour == 0 {
+                display_hour = 12;
+            }
+        }
+
+        let separator = if self.blink && (second & 1 == 1) {
+            ' '
+        } else {
+            ':'
+        };
+
+        if self.hide_seconds {
+            format!("{display_hour:02}{separator}{minute:02}{suffix}")
+        } else {
+            format!("{display_hour:02}{separator}{minute:02}{separator}{second:02}{suffix}")
+        }
+    }
+
+    fn one_line_extras(&self, date_line: &str) -> Vec<String> {
+        let mut extras = Vec::new();
+
+        if !date_line.is_empty() {
+            extras.push(date_line.to_string());
+        }
+
+        if self.show_weather() {
+            if let Some(weather_line) = self.weather.as_ref().and_then(Weather::line) {
+                extras.push(weather_line.to_string());
+            }
+        }
+
+        if self.show_now_playing() {
+            if let Some(now_playing_line) = self.now_playing.as_ref().and_then(NowPlaying::line) {
+                extras.push(now_playing_line.to_string());
+            }
+        }
+
+        extras
+    }
+
+    fn one_line_length(&self, date_line: &str, hour: u32, minute: u32, second: u32) -> usize {
+        let time_len = self.plain_time_text(hour, minute, second).chars().count();
+        let extras = self.one_line_extras(date_line);
+        if extras.is_empty() {
+            return time_len;
+        }
+
+        let extras_len = extras
+            .iter()
+            .map(|line| line.chars().count())
+            .sum::<usize>()
+            + Self::ONE_LINE_SEPARATOR.chars().count() * (extras.len() - 1);
+
+        time_len + Self::ONE_LINE_SEPARATOR.chars().count() + extras_len
+    }
+
+    fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+        let chars = text.chars().count();
+        if chars <= max_chars {
+            return text.to_string();
+        }
+        if max_chars == 0 {
+            return String::new();
+        }
+        if max_chars == 1 {
+            return "…".to_string();
+        }
+
+        let prefix = text.chars().take(max_chars - 1).collect::<String>();
+        format!("{prefix}…")
+    }
+
+    fn fmt_one_line(
+        &self,
+        w: &mut BufWriter<StdoutLock<'_>>,
+        date_line: &str,
+        hour: u32,
+        minute: u32,
+        second: u32,
+        time_color: &Color,
+    ) -> Result<(), Error> {
+        let mut time_text = self.plain_time_text(hour, minute, second);
+        let extras = self.one_line_extras(date_line);
+        let mut extras_text = extras.join(Self::ONE_LINE_SEPARATOR);
+        let full_extras_text = extras_text.clone();
+        let mut extras_truncated = false;
+
+        let available_after_padding = self
+            .padding
+            .terminal_width
+            .saturating_sub(self.padding.clock.chars().count() as u16)
+            .saturating_sub(1) as usize;
+
+        if time_text.chars().count() >= available_after_padding {
+            time_text = Self::truncate_with_ellipsis(&time_text, available_after_padding);
+            extras_text.clear();
+            extras_truncated = !full_extras_text.is_empty();
+        } else if !extras_text.is_empty() {
+            let remaining = available_after_padding
+                .saturating_sub(time_text.chars().count())
+                .saturating_sub(Self::ONE_LINE_SEPARATOR.chars().count());
+
+            let original = extras_text.clone();
+            extras_text = Self::truncate_with_ellipsis(&extras_text, remaining);
+            extras_truncated = extras_text != original;
+            if extras_text.is_empty() {
+                extras_text.clear();
+            }
+        }
+
+        write!(w, "\r\x1B[2K{}", self.padding.clock)?;
+        write!(
+            w,
+            "{}{}{}{}",
+            Color::BOLD,
+            time_color.foreground(),
+            time_text,
+            Color::RESET
+        )?;
+
+        if !extras_text.is_empty() {
+            write!(w, "{}{}", self.color.foreground(), Self::ONE_LINE_SEPARATOR)?;
+
+            if extras_truncated {
+                write!(w, "{}{}", extras_text, Color::RESET)?;
+            } else {
+                let weather_line = self.weather.as_ref().and_then(Weather::line);
+                let weather_temp = self.weather.as_ref().and_then(Weather::temperature_celsius);
+
+                for (index, extra) in extras.iter().enumerate() {
+                    if index > 0 {
+                        write!(w, "{}", Self::ONE_LINE_SEPARATOR)?;
+                    }
+
+                    if let (Some(weather_line), Some(temp_celsius)) = (weather_line, weather_temp) {
+                        if extra == weather_line {
+                            if let Some((temperature_text, rest)) = weather_line.split_once(" | ") {
+                                let fg = Self::temperature_colors(temp_celsius);
+                                write!(
+                                    w,
+                                    "{}{}{}{}{}{}",
+                                    Self::rgb_fg(fg),
+                                    temperature_text,
+                                    Color::RESET,
+                                    self.color.foreground(),
+                                    " | ",
+                                    rest
+                                )?;
+                                continue;
+                            }
+                        }
+                    }
+
+                    write!(w, "{extra}")?;
+                }
+
+                write!(w, "{}", Color::RESET)?;
+            }
+        }
+
+        write!(w, "\r")?;
+        Ok(())
+    }
+
     pub fn fmt(&self, w: &mut BufWriter<StdoutLock<'_>>) -> Result<(), Error> {
         let mut text = self.mode.text(self.width())?;
-        let (mut hour, minute, second) = self.mode.get_time();
+        let (hour, minute, second) = self.mode.get_time();
 
+        let alarm_color = Color::BrightRed;
+        let time_color = if self.alarm_active && (second & 1 == 0) {
+            &alarm_color
+        } else {
+            &self.color
+        };
+
+        if self.active_layout_mode == LayoutMode::Oneline {
+            return self.fmt_one_line(w, &text, hour, minute, second, time_color);
+        }
+
+        let mut hour = hour;
         if matches!(self.mode, ClockMode::Time { .. }) && self.use_12h {
             let suffix = if hour < 12 {
                 Self::AM_SUFFIX
@@ -423,13 +653,6 @@ impl Clock {
                 hour = 12;
             }
         }
-
-        let alarm_color = Color::BrightRed;
-        let time_color = if self.alarm_active && (second & 1 == 0) {
-            &alarm_color
-        } else {
-            &self.color
-        };
         let info_lines = self.info_lines(&text);
         let (split_column_start, split_column_width) = self.split_column();
         let clock_end = self.padding.clock.chars().count() as u16 + self.width();
@@ -466,7 +689,7 @@ impl Clock {
                 write!(w, "{colon}{s0}{s1}")?;
             }
 
-            if self.layout_mode == LayoutMode::Split {
+            if self.active_layout_mode == LayoutMode::Split {
                 let info_row_index = row.saturating_sub(split_info_start_row);
                 if row >= split_info_start_row {
                     if let Some(info_line) = info_lines.get(info_row_index) {
@@ -488,7 +711,7 @@ impl Clock {
             writeln!(w, "\r")?;
         }
 
-        if self.layout_mode == LayoutMode::Split {
+        if self.active_layout_mode == LayoutMode::Split {
             return Ok(());
         }
 

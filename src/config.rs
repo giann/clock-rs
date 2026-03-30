@@ -90,6 +90,8 @@ pub enum LayoutMode {
     #[default]
     Stacked,
     Split,
+    #[serde(alias = "one-line", alias = "single-line")]
+    Oneline,
 }
 
 #[derive(Clone, Deserialize)]

@@ -244,7 +244,7 @@ Here's a list of the available fields inside the `conf.toml` file.
 | `date.use_12h`            | Use the 12h format                         | `true` or `false`.                 | `false`      |
 | `date.utc`                | Use UTC time                               | `true` or `false`.                 | `false`      |
 | `date.hide_seconds`       | Do not show seconds                        | `true` or `false`.                 | `false`      |
-| `layout.mode`             | Layout mode for time vs info lines         | `"stacked"` (default) or `"split"` | `"stacked"`  |
+| `layout.mode`             | Layout mode for time vs info lines         | `"stacked"` (default), `"split"`, or `"oneline"` | `"stacked"`  |
 | `weather.latitude`        | Latitude used for Open-Meteo weather data  | A decimal latitude, e.g. `48.8566` | _unset_ (disabled) |
 | `weather.longitude`       | Longitude used for Open-Meteo weather data | A decimal longitude, e.g. `2.3522` | _unset_ (disabled) |
 | `weather.auto_location`   | Resolve coordinates from public IP when latitude/longitude are not set | `true` or `false` | `false` |
@@ -315,6 +315,8 @@ time = "10:00"
 > - alarms follow the displayed time zone (`date.utc`).
 >
 > `layout.mode = "split"` puts the time on the left and date/weather/now-playing/process-alert on the right.
+> `layout.mode = "oneline"` renders everything on one line and displays the time as bold regular text.
+> If the terminal height is too small for the configured non-one-line layout, the UI automatically falls back to `oneline`.
 > A process alert line is shown under now-playing whenever a process exceeds 50% CPU or RAM usage.
 > While weather, now-playing, or process usage refreshes in the background, a braille loader is shown in the bottom-right corner.
 

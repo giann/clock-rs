@@ -270,6 +270,10 @@ impl State {
     }
 
     fn render_loader(&self, stdout: &mut io::Stdout, width: u16, height: u16) -> Result<(), Error> {
+        if self.clock.is_one_line_active() {
+            return Ok(());
+        }
+
         let x = width.saturating_sub(1);
         let y = height.saturating_sub(1);
 
